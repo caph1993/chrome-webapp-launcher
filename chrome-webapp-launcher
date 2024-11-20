@@ -1,16 +1,19 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 """
-This script creates and launches desktop files that does the following when launched:
+This script creates and launches desktop files for Linux that do the following when launched:
  
  - if the app is running, focus the existing window
  - otherwise, open a new browser instance in "app mode".
 
 Usage examples:
-    {this_exec}     help
-    {this_exec}     create      'My app name' https://docs.google.com/document/d/.../edit
-    {this_exec}     launch      ...args
+    {this_exec}     --help
+    {this_exec}     --create      'My app name' https://docs.google.com/document/d/.../edit
+    {this_exec}     --launch      ...args
+    {this_exec}     --gui
 
 The url can be any, but the default icon is a google document. You can overwrite the icon at your will.
+
+https://github.com/caph1993/chrome-webapp-launcher/
 """
 
 import sys, subprocess
@@ -22,14 +25,6 @@ this_exec = Path(__file__).stem
 
 usage = (__doc__ or "").strip().format(this_exec=this_exec)
 
-usage_why = """
-Why?"
-   - https://superuser.com/questions/1457060/how-can-you-start-two-chrome-windows-with-different-wm-class-attributes"
-   - https://issues.chromium.org/issues/40172351""More info:"
-   - https://stackoverflow.com/questions/19229235/run-standalone-web-app-in-google-chrome-without-borders-or-toolbars"
-   - https://askubuntu.com/questions/367396/what-does-the-startupwmclass-field-of-a-desktop-file-represent"
-""".strip()
-
 
 def main():
     if len(sys.argv) <= 1:
@@ -39,11 +34,13 @@ def main():
             raise CLI_error("Not enough arguments")
     arg = sys.argv[1]
     args = sys.argv[2:]
-    assert_choice(arg, ["help", "create", "launch"])
-    if arg == "help":
-        print(f"{usage}\n\n{usage_why}")
+    assert_choice(arg, ["--help", "--create", "--launch", "--gui"])
+    if arg == "--help":
+        print(usage)
         return
-    if arg == "create":
+    if arg == "--gui":
+        return main_GUI()
+    if arg == "--create":
         if len(args) != 2:
             raise CLI_error(
                 f'Expected exactly 2 arguments after "create". Found {len(args)}: {args}'
@@ -130,7 +127,10 @@ example_icon = """
 
 local_share = Path("~").expanduser() / ".local" / "share"
 LS_APPS = local_share / "applications"
-LS_ICONS = local_share / "icons"
+LS_ICONS = local_share / "icons" / this_exec
+LS_APPS.mkdir(exist_ok=True, parents=False)
+LS_ICONS.parent.mkdir(exist_ok=True, parents=False)
+LS_ICONS.mkdir(exist_ok=True, parents=False)
 
 
 def create_launcher(name, url):
@@ -150,20 +150,18 @@ def create_launcher(name, url):
     # Parse the browser
     browser = "Chrome"
 
-    LS_ICONS.mkdir(exist_ok=True, parents=False)
     icon_path = LS_ICONS / wm_class
     icon_path.write_text(example_icon)
     icon = shlex.quote(str(icon_path))
 
     this_file = shlex.quote(str(Path(__file__).absolute()))
-    cmd = f"{this_file} launch --app={url} --class={wm_class} --name={wm_class}"
+    cmd = f"{this_file} --launch --app={url} --class={wm_class} --name={wm_class}"
 
     template_vars = dict(
         browser=browser, wm_class=wm_class, name=name, exec=cmd, icon=icon, url=url
     )
     contents = desktop_file_template.format(**template_vars)
 
-    LS_APPS.mkdir(exist_ok=True, parents=False)
     path = LS_APPS / (safe_name + ".desktop")
     path.write_text(contents)
     subprocess.run(["chmod", "+x", path])
