@@ -1,0 +1,258 @@
+#!/usr/bin/python3
+"""
+This script creates and launches desktop files that does the following when launched:
+ 
+ - if the app is running, focus the existing window
+ - otherwise, open a new browser instance in "app mode".
+
+Usage examples:
+    {this_exec}     help
+    {this_exec}     create      'My app name' https://docs.google.com/document/d/.../edit
+    {this_exec}     launch      ...args
+
+The url can be any, but the default icon is a google document. You can overwrite the icon at your will.
+"""
+
+import sys, subprocess
+import re, unicodedata, random, shlex  # All in standard library
+from string import ascii_lowercase
+from pathlib import Path
+
+this_exec = Path(__file__).stem
+
+usage = (__doc__ or "").strip().format(this_exec=this_exec)
+
+usage_why = """
+Why?"
+   - https://superuser.com/questions/1457060/how-can-you-start-two-chrome-windows-with-different-wm-class-attributes"
+   - https://issues.chromium.org/issues/40172351""More info:"
+   - https://stackoverflow.com/questions/19229235/run-standalone-web-app-in-google-chrome-without-borders-or-toolbars"
+   - https://askubuntu.com/questions/367396/what-does-the-startupwmclass-field-of-a-desktop-file-represent"
+""".strip()
+
+
+def main():
+    if len(sys.argv) <= 1:
+        if not sys.stdin.isatty():
+            return main_GUI()
+        else:
+            raise CLI_error("Not enough arguments")
+    arg = sys.argv[1]
+    args = sys.argv[2:]
+    assert_choice(arg, ["help", "create", "launch"])
+    if arg == "help":
+        print(f"{usage}\n\n{usage_why}")
+        return
+    if arg == "create":
+        if len(args) != 2:
+            raise CLI_error(
+                f'Expected exactly 2 arguments after "create". Found {len(args)}: {args}'
+            )
+        name, url = args
+        return create_launcher(name, url)
+
+    executable = "google-chrome"
+    wm_keywords = []
+    wm_keywords.extend(s[8:] for s in args if s.startswith("--class="))
+
+    # Since there's a bug in chrome, this is a hotfix:
+    app_url = next((s for s in args if s.startswith("--app=")), "")
+    app_url = re.sub(r"--app=https?\:\/\/(.*?)\/(.*)", r"\1//\2", app_url)
+    app_url = re.sub(r"[\/]", "_", app_url)
+    if app_url:
+        wm_keywords.append(app_url)
+
+    cmd = [executable] + args
+    if wm_keywords:
+        # Check if there is an open window with the app code
+        stdout = subprocess.check_output(["wmctrl", "-lx"]).decode("utf-8")
+        for line in stdout.split("\n"):
+            for wm_keyword in wm_keywords:
+                if wm_keyword in line:
+                    cmd = ["wmctrl", "-x", "-a", wm_keyword]
+                    break
+    subprocess.run(cmd)
+    return
+
+
+def assert_choice(element, elements):
+    if element not in elements:
+        raise CLI_error(
+            f"Argument {element} not understood. Expected one of {elements}"
+        )
+    return
+
+
+class CLI_error(Exception):
+    pass
+
+
+desktop_file_template = """
+[Desktop Entry]
+Categories=GTK;Web;
+Comment[en_US]=Web App
+Comment=Web App
+Exec={exec}
+GenericName[en_US]=
+GenericName=
+Icon={icon}
+MimeType=text/html;application/xml;
+Name[en_US]={name}
+Name={name}
+Path=
+StartupNotify=true
+StartupWMClass={wm_class}
+Terminal=false
+TerminalOptions=
+Type=Application
+Version=1.0
+X-KDE-SubstituteUID=false
+X-KDE-Username=
+X-MultipleArgs=false
+X-WebApp-Browser={browser}
+X-WebApp-CustomParameters=
+X-WebApp-Isolated=false
+X-WebApp-Navbar=false
+X-WebApp-PrivateWindow=false
+X-WebApp-URL={url}
+""".strip()
+
+example_icon = """
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" version="1">
+ <path style="opacity:0.2" d="M 14.5,8 C 13.115,8 12,9.115 12,10.5 v 45 c 0,1.385 1.115,2.5 2.5,2.5 h 35 C 50.885,58 52,56.885 52,55.5 V 23 L 38.25,21.75 37,8 Z"/>
+ <path fill="#528ff5" d="m14.5 7c-1.385 0-2.5 1.115-2.5 2.5v45c0 1.385 1.115 2.5 2.5 2.5h35c1.385 0 2.5-1.115 2.5-2.5v-32.5l-13.75-1.25-1.25-13.75z"/>
+ <path style="opacity:0.2;fill:#ffffff" d="M 14.5,7 C 13.115,7 12,8.115 12,9.5 v 1 C 12,9.115 13.115,8 14.5,8 H 37 L 38.25,21.75 52,22 v 0 L 38.25,20.75 37,7 Z"/>
+ <path fill="#a5c5f9" d="m37 7v12.5c0 1.3808 1.1193 2.5 2.5 2.5h12.5l-15-15z"/>
+ <path fill="#fff" d="m21 29v3h22v-3h-22zm0 6v3h22v-3h-22zm0 6v3h22v-3h-22zm0 6v3h16v-3h-16z"/>
+</svg>
+""".strip()
+
+
+local_share = Path("~").expanduser() / ".local" / "share"
+LS_APPS = local_share / "applications"
+LS_ICONS = local_share / "icons"
+
+
+def create_launcher(name, url):
+    # Parse the url
+    if not url.startswith("http"):
+        raise CLI_error(f"Expected url starting with http or https. Found {url}")
+    # Parse the name
+    # name = 'Notes 2024-11 november'
+    name = name.strip()
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", without_accents(name))
+    if not safe_name.strip():
+        raise CLI_error(f"Name cannot be empty")
+
+    wm_class = (
+        "WebApp-" + safe_name + "-" + gen_id()
+    )  # An arbitrary identifier for the OS window manager
+    # Parse the browser
+    browser = "Chrome"
+
+    LS_ICONS.mkdir(exist_ok=True, parents=False)
+    icon_path = LS_ICONS / wm_class
+    icon_path.write_text(example_icon)
+    icon = shlex.quote(str(icon_path))
+
+    this_file = shlex.quote(str(Path(__file__).absolute()))
+    cmd = f"{this_file} launch --app={url} --class={wm_class} --name={wm_class}"
+
+    template_vars = dict(
+        browser=browser, wm_class=wm_class, name=name, exec=cmd, icon=icon, url=url
+    )
+    contents = desktop_file_template.format(**template_vars)
+
+    LS_APPS.mkdir(exist_ok=True, parents=False)
+    path = LS_APPS / (safe_name + ".desktop")
+    path.write_text(contents)
+    subprocess.run(["chmod", "+x", path])
+
+    print("Success.")
+    if icon_path:
+        print()
+        print(f" - Icon location (overwrite the file to change it):")
+        print(icon_path.absolute())
+    print()
+    print(f" - Launcher location:")
+    print(path.absolute())
+    return
+
+
+def without_accents(s):
+    s = unicodedata.normalize("NFD", s)
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+
+
+def gen_id(n=2, l=5):
+    word = lambda: "".join(random.choice(ascii_lowercase) for _ in range(l))
+    return "-".join(word() for _ in range(n))
+
+
+def main_GUI():
+    import tkinter as tk
+    from tkinter import messagebox
+
+    root = tk.Tk()
+    root.title(this_exec)
+    # root.geometry("600x300")
+    # message = tk.Label(root, text="Your message goes here!", font=("Arial", 14))
+    # message.pack(pady=20)
+
+    # Create and place the "URL" field
+    url_label = tk.Label(
+        root, text="App URL. Ex: https://docs.google.com/document/d/.../edit"
+    )
+    url_label.pack(pady=(5, 5))
+    url_entry = tk.Entry(root, width=50)
+    url_entry.pack(pady=5)
+
+    # Create and place the "Name" field
+    name_label = tk.Label(root, text="App name. Ex: My document")
+    name_label.pack(pady=(10, 5))
+    name_entry = tk.Entry(root, width=50)
+    # name_entry.insert(0, "My document")
+    name_entry.pack(pady=5)
+
+    def on_create_button_click():
+        # Retrieve values from the entry fields
+        name = name_entry.get()
+        url = url_entry.get()
+
+        try:
+            create_launcher(name, url)
+        except CLI_error as e:
+            messagebox.showerror("Error", str(e))
+        else:
+            messagebox.showinfo("Success", "Desktop file created successfully!")
+        return
+
+    def on_folder_click(path):
+        try:
+            subprocess.run(["xdg-open", path])
+        except Exception as e:
+            messagebox.showerror(
+                "Error",
+                f"Please open the path manually:\n{path.absolute()}\n-------\n{e}",
+            )
+        return
+
+    # Create and place the "Create" button
+    tk.Button(root, text="Create", command=on_create_button_click).pack(pady=5)
+    tk.Button(
+        root, text="Open apps folder", command=lambda: on_folder_click(LS_APPS)
+    ).pack(pady=5)
+    tk.Button(
+        root, text="Open icons folder", command=lambda: on_folder_click(LS_ICONS)
+    ).pack(pady=5)
+    root.mainloop()
+    return
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except CLI_error:
+        print(usage)
+        print()
+        raise
